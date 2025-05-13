@@ -1,0 +1,42 @@
+Architecture Overview
+
+C++ Algorithm Core:
+
+Your existing C++ code (improvingalgo.cpp, own_benchmark.cpp, etc.) performs the heavy computation (Dinic's algorithm).
+It will be modified to print JSON updates representing the state of the algorithm (e.g., node visited, edge flow changed, current path) to its standard output (stdout). Each update should be a single line of JSON.
+FastAPI Backend (Python):
+
+Acts as an intermediary web server.
+It will expose a WebSocket endpoint that your Next.js frontend can connect to.
+It will have an HTTP endpoint (or receive a WebSocket message) to trigger the C++ algorithm.
+When triggered, FastAPI will run your compiled C++ executable as a subprocess.
+FastAPI will capture the stdout from the C++ subprocess. As JSON updates come in from C++ stdout, FastAPI will parse them and forward them over the WebSocket to the connected Next.js frontend.
+Next.js Frontend (JavaScript/TypeScript):
+
+The user interface built with React/Next.js.
+Connects to the FastAPI WebSocket endpoint.
+Receives JSON updates and uses a graph visualization library (like React Flow, Cytoscape.js, etc.) to render and update the graph live.
+Sends a message (via HTTP or WebSocket) to FastAPI to start/control the algorithm.
+Advantages of this Approach:
+
+Clear Separation of Concerns:
+C++ handles the complex algorithm efficiently.
+FastAPI handles web communication (HTTP, WebSockets), process management, and acts as a robust API layer. Python is excellent for these tasks.
+Next.js handles the user interface and presentation.
+Leverage Strengths: You use C++ for performance-critical computation, Python/FastAPI for its ease of web development and async capabilities, and Next.js/React for building modern UIs.
+Simplified C++: Your C++ code doesn't need to implement a WebSocket server directly. It just needs to print structured JSON to stdout, which is much simpler.
+Robust Communication: WebSockets are ideal for real-time, bidirectional communication needed for live updates.
+CORS Management: FastAPI makes it easy to handle Cross-Origin Resource Sharing (CORS), which is necessary when your Next.js frontend (e.g., on localhost:3000) communicates with your FastAPI backend (e.g., on localhost:8000).
+
+
+
+
+Development Workflow
+
+Compile C++ Code: Ensure your C++ program (e.g., own_benchmark) is compiled and prints JSON updates to stdout.
+Set CPP_EXECUTABLE Path: Correctly set the CPP_EXECUTABLE variable in your FastAPI main.py.
+Run FastAPI Backend: uvicorn main:app --reload --port 8000
+Run Next.js Frontend: npm run dev (or yarn dev)
+Open your Next.js app in the browser (usually http://localhost:3000).
+Trigger the "start algorithm" command from your Next.js UI.
+FastAPI will launch the C++ subprocess, capture its JSON output, and stream it to your Next.js app via WebSockets for live visualization.
