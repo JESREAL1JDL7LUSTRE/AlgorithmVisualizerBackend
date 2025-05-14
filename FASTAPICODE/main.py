@@ -5,13 +5,14 @@ import os
 import signal
 import subprocess
 from typing import Dict, List, Optional
+import threading
 
 from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-aio = asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # Configure logging
 logging.basicConfig(
@@ -22,8 +23,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Path to the C++ executable (ensure this points to your executable)
-CPP_EXECUTABLE = "./algorithm/main.exe"  # Ensure the path is consistent
-GRAPH_PATH = "./algorithm/SG.json"  # Path to the graph file
+CPP_EXECUTABLE = ".\\algorithm\\main.exe"  # Ensure the path is consistent
+GRAPH_PATH = ".\\algorithm\\SG.json"  # Path to the graph file
 
 process = subprocess.Popen(
     [CPP_EXECUTABLE, GRAPH_PATH, "1"],
@@ -45,8 +46,8 @@ app.add_middleware(
 
 # Store active connections and the algorithm process
 active_connections: List[WebSocket] = []
-algorithm_process: Optional[asyncio.subprocess.Process] = None
-process_lock = asyncio.Lock()
+algorithm_process: Optional[subprocess.Popen] = None
+process_lock = threading.Lock()
 
 # Models for API requests
 class StartAlgorithmRequest(BaseModel):
@@ -79,53 +80,37 @@ async def start_algorithm(request: StartAlgorithmRequest):
     """Start the algorithm with the specified parameters"""
     global algorithm_process
     
-    async with process_lock:
+    with process_lock:
         if algorithm_process:
             # Stop existing process first
             await stop_algorithm_process()
             
         # Build command with parameters
-        graph_path = "./algorithm/SG.json"
-        cmd = f"{CPP_EXECUTABLE} {graph_path} {request.speed}"
-        print("Current Working Directory: ", os.getcwd())
+        graph_path = ".\\algorithm\\SG.json"
+        cmd = [CPP_EXECUTABLE, graph_path, str(request.speed)]
+        logger.info(f"Running command: {' '.join(cmd)}")
+        logger.info(f"Current Working Directory: {os.getcwd()}")
+        logger.info(f"Executable exists: {os.path.exists(CPP_EXECUTABLE)}")
+        logger.info(f"Graph file exists: {os.path.exists(graph_path)}")
         
         try:
-            # Check if executable exists
-            if not os.path.exists(CPP_EXECUTABLE):
-                logger.error(f"Executable not found: {CPP_EXECUTABLE}")
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Executable not found: {CPP_EXECUTABLE}"
-                )
-                
-            # Check if graph file exists
-            if not os.path.exists(graph_path):
-                logger.error(f"Graph file not found: {graph_path}")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Graph file not found: {request.graph_file}"
-                )
-            
-            # Start the algorithm process
-            logger.info(f"Running command: {cmd}")
-            logger.info(f"Current Working Directory: {os.getcwd()}")
             # Create subprocess with pipes for stdout and stderr
-            algorithm_process = await aio.create_subprocess_exec(
-                *cmd,
+            algorithm_process = subprocess.Popen(
+                cmd,
                 cwd=os.getcwd(),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,  # Line buffered
             )
             
+            if algorithm_process is None:
+                raise Exception("Failed to create subprocess")
+                
+            logger.info(f"Process created with PID: {algorithm_process.pid}")
+            
+            # Start tasks to read output in background
             asyncio.create_task(read_and_broadcast())
-            asyncio.create_task(capture_stderr())
-            
-            logger.info(f"Algorithm process started with PID: {algorithm_process.pid}")
-            
-            # Start task to read and broadcast output
-            asyncio.create_task(read_and_broadcast())
-            
-            # Also start a task to capture stderr for debugging
             asyncio.create_task(capture_stderr())
             
             return AlgorithmResponse(
@@ -135,8 +120,10 @@ async def start_algorithm(request: StartAlgorithmRequest):
             
         except Exception as e:
             logger.error(f"Failed to start algorithm: {str(e)}")
+            logger.error(f"Exception type: {type(e)}")
+            logger.error(f"Exception details: {e.__dict__ if hasattr(e, '__dict__') else 'No details'}")
             raise HTTPException(
-                status_code=500, 
+                status_code=500,
                 detail=f"Failed to start algorithm: {str(e)}"
             )
 
@@ -144,26 +131,42 @@ async def capture_stderr():
     """Capture and log stderr output from the algorithm process"""
     global algorithm_process
     
-    if not algorithm_process or not algorithm_process.stderr:
+    if not algorithm_process:
+        logger.error("No algorithm process found in stderr capture")
         return
         
+    logger.info(f"Starting to capture stderr from PID: {algorithm_process.pid}")
+    
     try:
-        while algorithm_process and algorithm_process.stderr:
-            line = await algorithm_process.stderr.readline()
+        while algorithm_process and not algorithm_process.poll():
+            line = algorithm_process.stderr.readline()
             if not line:
-                break
+                continue
                 
-            error_msg = line.decode('utf-8').strip()
+            error_msg = line.strip()
             if error_msg:
-                logger.error(f"Algorithm stderr: {error_msg}")
+                logger.error(f"Algorithm stderr output: {error_msg}")
+                # Also broadcast error to clients
+                error_update = {
+                    "type": "error",
+                    "message": error_msg
+                }
+                for connection in active_connections:
+                    try:
+                        await connection.send_text(json.dumps(error_update))
+                    except Exception as e:
+                        logger.error(f"Failed to send error to client: {str(e)}")
                 
     except Exception as e:
         logger.error(f"Error capturing stderr: {str(e)}")
+        logger.exception(e)  # This will print the full stack trace
 
 @app.post("/stop-algorithm", response_model=AlgorithmResponse)
 async def stop_algorithm():
     """Stop the running algorithm"""
-    async with process_lock:
+    global algorithm_process
+    
+    with process_lock:
         if not algorithm_process:
             return AlgorithmResponse(message="No algorithm is running")
             
@@ -181,29 +184,31 @@ async def stop_algorithm_process():
         # Send termination signal
         logger.info(f"Stopping algorithm process (PID: {algorithm_process.pid})")
         
-        # Try SIGTERM first
-        try:
-            os.kill(algorithm_process.pid, signal.SIGTERM)
-            
-            # Wait briefly for graceful termination
-            try:
-                await asyncio.wait_for(algorithm_process.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                # If still running after timeout, force kill
-                os.kill(algorithm_process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            # Process already terminated
-            pass
-            
-        # Wait for process to exit
-        if algorithm_process.returncode is None:
-            await algorithm_process.wait()
-            
-        logger.info("Algorithm process stopped")
-        
+        with process_lock:
+            if algorithm_process:
+                # Try SIGTERM first
+                try:
+                    algorithm_process.terminate()
+                    
+                    # Wait briefly for graceful termination
+                    try:
+                        algorithm_process.wait(timeout=1.0)
+                    except subprocess.TimeoutExpired:
+                        # If still running after timeout, force kill
+                        algorithm_process.kill()
+                except Exception:
+                    # Process already terminated
+                    pass
+                    
+                # Wait for process to exit
+                if algorithm_process.poll() is None:
+                    algorithm_process.wait()
+                    
+                logger.info("Algorithm process stopped")
+                algorithm_process = None
+                
     except Exception as e:
         logger.error(f"Error stopping algorithm process: {str(e)}")
-    finally:
         algorithm_process = None
 
 @app.websocket("/ws")
@@ -241,36 +246,51 @@ async def read_and_broadcast():
     global algorithm_process
     
     if not algorithm_process:
+        logger.error("No algorithm process found")
         return
         
-    logger.info("Starting to read algorithm output")
+    logger.info(f"Starting to read algorithm output from PID: {algorithm_process.pid}")
+    logger.info(f"Number of active WebSocket connections: {len(active_connections)}")
     
     try:
-        while algorithm_process and algorithm_process.stdout:
-            # Read line from stdout
-            line = await algorithm_process.stdout.readline()
+        while algorithm_process and not algorithm_process.poll():
+            line = algorithm_process.stdout.readline()
             if not line:
-                break
+                logger.debug("Empty line received from algorithm")
+                continue
                 
             # Parse and broadcast JSON update
             try:
-                line_str = line.decode('utf-8').strip()
+                line_str = line.strip()
+                if not line_str:
+                    logger.debug("Empty string after stripping")
+                    continue
+                    
+                logger.debug(f"Raw output from algorithm: {line_str}")
                 update = json.loads(line_str)
                 
                 # Log updates (except very frequent ones to reduce noise)
                 if update.get("type") not in ["node_visited", "edge_explored", "dfs_visit"]:
-                    logger.info(f"Algorithm update: {update['type']}")
+                    logger.info(f"Algorithm update: {update}")
                     
                 # Broadcast to all connected clients
+                broadcast_count = 0
                 for connection in active_connections:
-                    await connection.send_text(json.dumps(update))
+                    try:
+                        await connection.send_text(json.dumps(update))
+                        broadcast_count += 1
+                    except Exception as e:
+                        logger.error(f"Failed to send to a client: {str(e)}")
+                
+                logger.debug(f"Broadcasted update to {broadcast_count} clients")
                     
             except json.JSONDecodeError as e:
-                logger.warning(f"Invalid JSON from algorithm: {line} - {str(e)}")
+                logger.warning(f"Invalid JSON from algorithm: {line_str} - {str(e)}")
             except Exception as e:
                 logger.error(f"Error broadcasting update: {str(e)}")
                 
         logger.info("Algorithm process output stream ended")
+        logger.info(f"Process return code: {algorithm_process.returncode if algorithm_process else 'None'}")
         
         # Check process status
         if algorithm_process:
@@ -289,9 +309,10 @@ async def read_and_broadcast():
                     
     except Exception as e:
         logger.error(f"Error reading algorithm output: {str(e)}")
+        logger.exception(e)  # This will print the full stack trace
     finally:
         # Ensure process is cleaned up
-        async with process_lock:
+        with process_lock:
             if algorithm_process:
                 await stop_algorithm_process()
 
@@ -299,7 +320,7 @@ async def read_and_broadcast():
 @app.on_event("shutdown")
 async def shutdown_event():
     logger.info("Server shutting down, cleaning up resources")
-    async with process_lock:
+    with process_lock:
         if algorithm_process:
             await stop_algorithm_process()
 
