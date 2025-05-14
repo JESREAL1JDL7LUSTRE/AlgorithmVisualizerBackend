@@ -4,6 +4,7 @@ import logging
 import os
 import signal
 import subprocess
+import time
 from typing import Dict, List, Optional
 import threading
 
@@ -26,12 +27,6 @@ logger = logging.getLogger(__name__)
 CPP_EXECUTABLE = ".\\algorithm\\main.exe"  # Ensure the path is consistent
 GRAPH_PATH = ".\\algorithm\\SG.json"  # Path to the graph file
 
-process = subprocess.Popen(
-    [CPP_EXECUTABLE, GRAPH_PATH, "1"],
-    stdout=subprocess.PIPE,
-    stderr=subprocess.PIPE,
-    text=True,
-)
 # Create FastAPI app
 app = FastAPI(title="Flow Algorithm Visualizer")
 
@@ -87,7 +82,9 @@ async def start_algorithm(request: StartAlgorithmRequest):
             
         # Build command with parameters
         graph_path = ".\\algorithm\\SG.json"
-        cmd = [CPP_EXECUTABLE, graph_path, str(request.speed)]
+        # Ensure speed parameter is properly handled
+        speed_param = max(0.1, min(3.0, request.speed))
+        cmd = [CPP_EXECUTABLE, graph_path, str(speed_param)]
         logger.info(f"Running command: {' '.join(cmd)}")
         logger.info(f"Current Working Directory: {os.getcwd()}")
         logger.info(f"Executable exists: {os.path.exists(CPP_EXECUTABLE)}")
@@ -171,6 +168,18 @@ async def stop_algorithm():
             return AlgorithmResponse(message="No algorithm is running")
             
         await stop_algorithm_process()
+        
+        # Broadcast algorithm_stopped event to all clients
+        stop_message = {
+            "type": "algorithm_stopped",
+            "message": "Algorithm stopped by user request"
+        }
+        for connection in active_connections:
+            try:
+                await connection.send_text(json.dumps(stop_message))
+            except Exception as e:
+                logger.error(f"Failed to send stop message to client: {str(e)}")
+                
         return AlgorithmResponse(message="Algorithm stopped successfully")
 
 async def stop_algorithm_process():
@@ -222,17 +231,19 @@ async def websocket_endpoint(websocket: WebSocket):
         
         # Keep connection open until client disconnects
         while True:
-            # Just wait for disconnection
+            # Wait for messages from the client
             data = await websocket.receive_text()
-            logger.debug(f"Received message: {data}")
+            logger.info(f"Received WebSocket message: {data}")
             
             # Process any commands received from the frontend
             try:
                 message = json.loads(data)
                 if message.get("command") == "stop":
+                    logger.info("Received stop command via WebSocket")
                     await stop_algorithm()
             except json.JSONDecodeError:
-                pass
+                logger.warning(f"Received invalid JSON via WebSocket: {data}")
+            
     except Exception as e:
         logger.error(f"WebSocket error: {str(e)}")
     finally:
@@ -303,7 +314,7 @@ async def read_and_broadcast():
         # Final cleanup if not already done
         with process_lock:
             if algorithm_process:
-                return_code = algorithm_process.returncode
+                return_code = algorithm_process.poll()
                 logger.info(f"Process return code: {return_code if return_code is not None else 'None'}")
                 
                 # Close pipes and clean up

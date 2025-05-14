@@ -61,4 +61,4 @@ def generate_strongly_connected_graph(num_nodes, num_edges, max_capacity=100, ou
     print(f"Generated graph with {num_nodes} nodes and {len(graph['edges'])} edges saved to '{output_file}'")
 
 # Usage example
-generate_strongly_connected_graph(num_nodes=100, num_edges=200, output_file="FASTAPICODE/algorithm/SG.json")
+generate_strongly_connected_graph(num_nodes=50, num_edges=200, output_file="FASTAPICODE/algorithm/SG.json")

@@ -59,7 +59,7 @@ bool Dinic::bfs(int s, int t) {
 
 bool Dinic::parallelBFS(int s, int t) {
     // For smaller graphs, use sequential BFS
-    if (V < 50000) {
+    if (V < 50) {
         return bfs(s, t);
     }
     
@@ -72,8 +72,8 @@ bool Dinic::parallelBFS(int s, int t) {
         int f_size = frontier.size();
         
         // Adaptive threading - only use multiple threads for large frontiers
-        int num_threads = (f_size > 10000) ? 
-                          min(NUM_THREADS, max(1, f_size / 1000)) : 1;
+        int num_threads = (f_size > 40) ? 
+                          min(NUM_THREADS, max(1, f_size / 10)) : 1;
         
         vector<vector<int>> next_frontiers(num_threads);
         for (auto& nf : next_frontiers) {
@@ -189,7 +189,7 @@ int Dinic::dfs_optimized(int u, int t, int flow, vector<int>& local_ptr) {
 
 void Dinic::parallelDFS(int s, int t, atomic<int>& total_flow) {
     // Adaptive approach - use sequential for small graphs
-    if (V < 100000) {
+    if (V < 50) {
         int flow;
         while ((flow = dfs(s, t, INF)) > 0) {
             total_flow += flow;
@@ -197,7 +197,7 @@ void Dinic::parallelDFS(int s, int t, atomic<int>& total_flow) {
         return;
     }
     
-    const int TASK_THRESHOLD = 100; // Minimum task size for parallel processing
+    const int TASK_THRESHOLD = 10; // Minimum task size for parallel processing
     
     // Create task queue with initial edges from source
     vector<DFSTask> tasks;
@@ -365,7 +365,7 @@ int Dinic::maxFlow(int s, int t) {
     int flow = 0;
     
     // Analyze graph size to determine approach
-    bool use_parallel = (V > 10000);
+    bool use_parallel = (V > 50);
     
     // Run the algorithm
     while (use_parallel ? parallelBFS(s, t) : bfs(s, t)) {
