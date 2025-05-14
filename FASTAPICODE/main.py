@@ -283,6 +283,15 @@ async def read_and_broadcast():
                         logger.error(f"Failed to send to a client: {str(e)}")
                 
                 logger.debug(f"Broadcasted update to {broadcast_count} clients")
+                
+                # If this is the final result, clean up the process
+                if update.get("type") in ["algorithm_complete", "result"]:
+                    with process_lock:
+                        if algorithm_process:
+                            algorithm_process.stdout.close()
+                            algorithm_process.stderr.close()
+                            algorithm_process = None
+                            logger.info("Algorithm process cleaned up after completion")
                     
             except json.JSONDecodeError as e:
                 logger.warning(f"Invalid JSON from algorithm: {line_str} - {str(e)}")
@@ -290,35 +299,50 @@ async def read_and_broadcast():
                 logger.error(f"Error broadcasting update: {str(e)}")
                 
         logger.info("Algorithm process output stream ended")
-        logger.info(f"Process return code: {algorithm_process.returncode if algorithm_process else 'None'}")
         
-        # Check process status
-        if algorithm_process:
-            return_code = algorithm_process.returncode
-            if return_code is not None:
-                logger.info(f"Algorithm process exited with code {return_code}")
+        # Final cleanup if not already done
+        with process_lock:
+            if algorithm_process:
+                return_code = algorithm_process.returncode
+                logger.info(f"Process return code: {return_code if return_code is not None else 'None'}")
+                
+                # Close pipes and clean up
+                algorithm_process.stdout.close()
+                algorithm_process.stderr.close()
+                algorithm_process = None
+                logger.info("Algorithm process cleaned up")
                 
                 # Broadcast completion if not already done
                 completion_msg = {
                     "type": "algorithm_complete",
-                    "exit_code": return_code,
-                    "status": "success" if return_code == 0 else "error"
+                    "exit_code": return_code if return_code is not None else 0,
+                    "status": "success" if return_code == 0 or return_code is None else "error"
                 }
                 for connection in active_connections:
-                    await connection.send_text(json.dumps(completion_msg))
+                    try:
+                        await connection.send_text(json.dumps(completion_msg))
+                    except Exception as e:
+                        logger.error(f"Failed to send completion message: {str(e)}")
                     
     except Exception as e:
         logger.error(f"Error reading algorithm output: {str(e)}")
         logger.exception(e)  # This will print the full stack trace
     finally:
-        # Ensure process is cleaned up
+        # Final cleanup if something went wrong
         with process_lock:
             if algorithm_process:
-                await stop_algorithm_process()
+                try:
+                    algorithm_process.stdout.close()
+                    algorithm_process.stderr.close()
+                except:
+                    pass
+                algorithm_process = None
+                logger.info("Algorithm process cleaned up in finally block")
 
 # Shutdown event handler
 @app.on_event("shutdown")
 async def shutdown_event():
+    global algorithm_process
     logger.info("Server shutting down, cleaning up resources")
     with process_lock:
         if algorithm_process:
