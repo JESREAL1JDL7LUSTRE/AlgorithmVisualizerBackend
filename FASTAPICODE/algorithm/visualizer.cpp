@@ -2,11 +2,17 @@
 #include "graphloader.h"
 #include <iostream>
 #include <chrono>
+#include <thread>
 #include <nlohmann/json.hpp>
 #include <fstream>
+#include <queue>
+#include <cmath>
 
 using namespace std::chrono;
 using json = nlohmann::json;
+
+// Global variable to control visualization delay
+int g_delay_factor = 10; // Default delay factor
 
 void emit_json_update(const json& update) {
     // Output JSON update to stdout (will be captured by FastAPI)
@@ -35,7 +41,7 @@ public:
         // Add all nodes
         for (int i = 0; i < V; i++) {
             // Compute x,y positions in a circular layout
-            double angle = 2 * M_PI * i / V;
+            double angle = 2 * 3.14159265358979323846 * i / V;
             int radius = 200;
             int x = 250 + radius * cos(angle);
             int y = 250 + radius * sin(angle);
@@ -48,8 +54,9 @@ public:
         }
         
         // Add all edges with initial flow=0
+        const auto& adj_list = Dinic::getAdj();
         for (int u = 0; u < V; u++) {
-            for (const auto& e : adj[u]) {
+            for (const auto& e : adj_list[u]) {
                 if (e.cap > 0) { // Only add forward edges
                     init_update["edges"].push_back({
                         {"source", u},
@@ -71,7 +78,8 @@ public:
             iteration++;
             
             // Reset ptr for new iteration
-            fill(ptr.begin(), ptr.end(), 0);
+            auto& ptr_ref = Dinic::getPtr();
+            std::fill(ptr_ref.begin(), ptr_ref.end(), 0);
             
             // Emit iteration start event
             json iter_update = {
@@ -111,16 +119,12 @@ public:
         return flow;
     }
     
-    // Add public access to the adjacency list for visualization
-    const std::vector<std::vector<Edge>>& getAdj() const {
-        return adj;
-    }
-    
 protected:
     // Override BFS to add visualization events
     bool bfs(int s, int t) {
-        fill(level.begin(), level.end(), -1);
-        level[s] = 0;
+        auto& level_ref = Dinic::getLevel();
+        std::fill(level_ref.begin(), level_ref.end(), -1);
+        level_ref[s] = 0;
         
         std::queue<int> q;
         q.push(s);
@@ -144,11 +148,12 @@ protected:
             emit_json_update(node_visit);
             
             // Slow down for visualization purposes
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            std::this_thread::sleep_for(std::chrono::milliseconds(g_delay_factor));
             
-            for (const Edge& e : adj[u]) {
-                if (level[e.v] == -1 && e.flow < e.cap) {
-                    level[e.v] = level[u] + 1;
+            const auto& adj_list = Dinic::getAdj();
+            for (const Edge& e : adj_list[u]) {
+                if (level_ref[e.v] == -1 && e.flow < e.cap) {
+                    level_ref[e.v] = level_ref[u] + 1;
                     q.push(e.v);
                     
                     // Emit edge exploration event
@@ -163,12 +168,12 @@ protected:
                     emit_json_update(edge_explore);
                     
                     // Slow down slightly for edge exploration
-                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    std::this_thread::sleep_for(std::chrono::milliseconds(g_delay_factor / 2));
                 }
             }
         }
         
-        bool path_exists = level[t] != -1;
+        bool path_exists = level_ref[t] != -1;
         
         json bfs_complete = {
             {"type", "bfs_complete"},
@@ -191,12 +196,16 @@ protected:
         emit_json_update(dfs_visit);
         
         // Small delay for visualization
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        std::this_thread::sleep_for(std::chrono::milliseconds(g_delay_factor));
         
-        for (int& i = ptr[u]; i < adj[u].size(); ++i) {
-            Edge& e = adj[u][i];
+        auto& ptr_ref = Dinic::getPtr();
+        auto& adj_list = Dinic::getAdj();
+        auto& level_ref = Dinic::getLevel();
+        
+        for (int& i = ptr_ref[u]; i < adj_list[u].size(); ++i) {
+            Edge& e = adj_list[u][i];
             
-            if (level[e.v] == level[u] + 1 && e.flow < e.cap) {
+            if (level_ref[e.v] == level_ref[u] + 1 && e.flow < e.cap) {
                 // Emit edge examination
                 json edge_examine = {
                     {"type", "edge_examined"},
@@ -208,12 +217,12 @@ protected:
                 };
                 emit_json_update(edge_examine);
                 
-                int curr_flow = min(flow, e.cap - e.flow);
+                int curr_flow = std::min(flow, e.cap - e.flow);
                 int temp_flow = dfs_with_viz(e.v, t, curr_flow);
                 
                 if (temp_flow > 0) {
                     e.flow += temp_flow;
-                    adj[e.v][e.rev].flow -= temp_flow;
+                    adj_list[e.v][e.rev].flow -= temp_flow;
                     
                     // Emit edge update
                     json edge_update = {
@@ -237,7 +246,8 @@ protected:
     // Store path information for visualization
     void reconstruct_path(int s, int t, std::vector<int>& path) {
         path.clear();
-        if (level[t] == -1) return; // No path exists
+        auto& level_ref = Dinic::getLevel();
+        if (level_ref[t] == -1) return; // No path exists
         
         std::vector<bool> visited(V, false);
         std::vector<int> parent(V, -1);
@@ -246,11 +256,12 @@ protected:
         q.push(s);
         visited[s] = true;
         
+        const auto& adj_list = Dinic::getAdj();
         while (!q.empty() && !visited[t]) {
             int u = q.front();
             q.pop();
             
-            for (const Edge& e : adj[u]) {
+            for (const Edge& e : adj_list[u]) {
                 if (!visited[e.v] && e.flow < e.cap) {
                     visited[e.v] = true;
                     parent[e.v] = u;
@@ -275,22 +286,18 @@ protected:
     
     // Variables for visualization
     int V;
-    using Dinic::adj;
-    using Dinic::level;
-    using Dinic::ptr;
 };
 
 int main(int argc, char* argv[]) {
-    // Parse command line arguments (could be extended with more options)
+    // Parse command line arguments
     std::string filename = "SG.json";
     if (argc > 1) {
         filename = argv[1];
     }
     
-    // Optional speed control
-    int delay_factor = 1;
+    // Optional speed control (delay factor in milliseconds)
     if (argc > 2) {
-        delay_factor = std::stoi(argv[2]);
+        g_delay_factor = std::stoi(argv[2]);
     }
     
     Graph graph;

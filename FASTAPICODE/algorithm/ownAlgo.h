@@ -30,6 +30,26 @@ public:
     void addEdge(int u, int v, int cap);
     int maxFlow(int s, int t);
 
+    // for the visualization
+        const std::vector<std::vector<Edge>>& getAdj() const { // Add this method
+        return adj;
+    }
+        std::vector<std::vector<Edge>>& getAdj() { // Non-const overload
+        return adj;
+    }
+        const std::vector<int>& getPtr() const { // Add this method
+        return ptr;
+    }
+        std::vector<int>& getPtr() { // Non-const overload
+        return ptr;
+    }
+        const std::vector<int>& getLevel() const { // Add this method
+        return level;
+    }
+        std::vector<int>& getLevel() { // Non-const overload
+        return level;
+    }
+
 private:
     int V;
     std::vector<std::vector<Edge>> adj;

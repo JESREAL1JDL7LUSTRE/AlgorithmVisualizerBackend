@@ -11,6 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+aio = asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -19,9 +21,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Path to the C++ executable
-CPP_EXECUTABLE = "./visualizer_algo"
+# Path to the C++ executable (ensure this points to your executable)
+CPP_EXECUTABLE = "./algorithm/main.exe"  # Ensure the path is consistent
+GRAPH_PATH = "./algorithm/SG.json"  # Path to the graph file
 
+process = subprocess.Popen(
+    [CPP_EXECUTABLE, GRAPH_PATH, "1"],
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE,
+    text=True,
+)
 # Create FastAPI app
 app = FastAPI(title="Flow Algorithm Visualizer")
 
@@ -43,7 +52,7 @@ process_lock = asyncio.Lock()
 class StartAlgorithmRequest(BaseModel):
     source: int = 0
     sink: Optional[int] = None
-    algorithm: str = "dinic"
+    algorithm: str = "Dinic"
     graph_type: str = "custom"
     graph_file: str = "SG.json"
     speed: float = 1.0
@@ -60,8 +69,8 @@ async def root():
 async def get_config():
     """Get configuration options for the algorithm"""
     return {
-        "algorithms": ["dinic"],
-        "graph_types": ["custom", "random"],
+        "algorithms": ["Dinic"],
+        "graph_types": ["custom"],
         "predefined_graphs": ["SG.json"],
     }
 
@@ -76,25 +85,48 @@ async def start_algorithm(request: StartAlgorithmRequest):
             await stop_algorithm_process()
             
         # Build command with parameters
-        cmd = [
-            CPP_EXECUTABLE,
-            request.graph_file,
-            str(int(10 / request.speed))  # Convert speed to delay factor
-        ]
+        graph_path = "./algorithm/SG.json"
+        cmd = f"{CPP_EXECUTABLE} {graph_path} {request.speed}"
+        print("Current Working Directory: ", os.getcwd())
         
         try:
-            # Start the algorithm process
-            logger.info(f"Starting algorithm process: {' '.join(cmd)}")
+            # Check if executable exists
+            if not os.path.exists(CPP_EXECUTABLE):
+                logger.error(f"Executable not found: {CPP_EXECUTABLE}")
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Executable not found: {CPP_EXECUTABLE}"
+                )
+                
+            # Check if graph file exists
+            if not os.path.exists(graph_path):
+                logger.error(f"Graph file not found: {graph_path}")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Graph file not found: {request.graph_file}"
+                )
             
+            # Start the algorithm process
+            logger.info(f"Running command: {cmd}")
+            logger.info(f"Current Working Directory: {os.getcwd()}")
             # Create subprocess with pipes for stdout and stderr
-            algorithm_process = await asyncio.create_subprocess_exec(
+            algorithm_process = await aio.create_subprocess_exec(
                 *cmd,
+                cwd=os.getcwd(),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE
             )
             
+            asyncio.create_task(read_and_broadcast())
+            asyncio.create_task(capture_stderr())
+            
+            logger.info(f"Algorithm process started with PID: {algorithm_process.pid}")
+            
             # Start task to read and broadcast output
             asyncio.create_task(read_and_broadcast())
+            
+            # Also start a task to capture stderr for debugging
+            asyncio.create_task(capture_stderr())
             
             return AlgorithmResponse(
                 message="Algorithm started successfully",
@@ -107,6 +139,26 @@ async def start_algorithm(request: StartAlgorithmRequest):
                 status_code=500, 
                 detail=f"Failed to start algorithm: {str(e)}"
             )
+
+async def capture_stderr():
+    """Capture and log stderr output from the algorithm process"""
+    global algorithm_process
+    
+    if not algorithm_process or not algorithm_process.stderr:
+        return
+        
+    try:
+        while algorithm_process and algorithm_process.stderr:
+            line = await algorithm_process.stderr.readline()
+            if not line:
+                break
+                
+            error_msg = line.decode('utf-8').strip()
+            if error_msg:
+                logger.error(f"Algorithm stderr: {error_msg}")
+                
+    except Exception as e:
+        logger.error(f"Error capturing stderr: {str(e)}")
 
 @app.post("/stop-algorithm", response_model=AlgorithmResponse)
 async def stop_algorithm():
@@ -176,7 +228,6 @@ async def websocket_endpoint(websocket: WebSocket):
                     await stop_algorithm()
             except json.JSONDecodeError:
                 pass
-                
     except Exception as e:
         logger.error(f"WebSocket error: {str(e)}")
     finally:
@@ -184,7 +235,7 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in active_connections:
             active_connections.remove(websocket)
         logger.info("WebSocket connection closed")
-
+        
 async def read_and_broadcast():
     """Read output from the algorithm process and broadcast to all WebSocket clients"""
     global algorithm_process

@@ -4,7 +4,7 @@
 #include <chrono>
 using namespace std::chrono;
 
-int main() {
+int runBenchmark() {
     Graph graph;
 
     // Load graph from JSON file first
