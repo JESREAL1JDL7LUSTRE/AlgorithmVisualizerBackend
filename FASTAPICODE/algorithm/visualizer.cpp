@@ -225,74 +225,96 @@ protected:
         return path_exists;
     }
 
-    // DFS with visualization and path tracking
-    int dfs_with_viz(int u, int t, int flow, std::vector<int> current_path) {
-        current_path.push_back(u);
+// Add an event when DFS backtracks from a dead end
+int dfs_with_viz(int u, int t, int flow, std::vector<int> current_path) {
+    current_path.push_back(u);
 
-        if (u == t) {
-            // Emit path found event
-            json path_found = {
-                {"type", "path_found"},
-                {"path", current_path}
-            };
-            emit_json_update(path_found);
-            return flow;
-        }
-
-        // Emit node visit in DFS
-        json dfs_visit = {
-            {"type", "dfs_visit"},
-            {"node_id", u}
+    if (u == t) {
+        // Emit path found event
+        json path_found = {
+            {"type", "path_found"},
+            {"path", current_path}
         };
-        emit_json_update(dfs_visit);
+        emit_json_update(path_found);
+        return flow;
+    }
 
-        // Small delay for visualization
-        std::this_thread::sleep_for(std::chrono::milliseconds(g_delay_factor));
+    // Emit node visit in DFS 
+    json dfs_visit = {
+        {"type", "dfs_visit"},
+        {"node_id", u},
+        {"current_path", current_path}  // Add this to show the current exploration path
+    };
+    emit_json_update(dfs_visit);
 
-        auto& ptr_ref = Dinic::getPtr();
-        auto& adj_list = Dinic::getAdj();
-        auto& level_ref = Dinic::getLevel();
+    // Small delay for visualization
+    std::this_thread::sleep_for(std::chrono::milliseconds(g_delay_factor));
 
-        for (int& i = ptr_ref[u]; i < adj_list[u].size(); ++i) {
-            Edge& e = adj_list[u][i];
+    auto& ptr_ref = Dinic::getPtr();
+    auto& adj_list = Dinic::getAdj();
+    auto& level_ref = Dinic::getLevel();
 
-            if (level_ref[e.v] == level_ref[u] + 1 && e.flow < e.cap) {
-                // Emit edge examination
-                json edge_examine = {
-                    {"type", "edge_examined"},
+    bool path_found = false;
+    
+    for (int& i = ptr_ref[u]; i < adj_list[u].size(); ++i) {
+        Edge& e = adj_list[u][i];
+
+        if (level_ref[e.v] == level_ref[u] + 1 && e.flow < e.cap) {
+            // Emit edge examination
+            json edge_examine = {
+                {"type", "edge_examined"},
+                {"source", u},
+                {"target", e.v},
+                {"capacity", e.cap},
+                {"flow", e.flow},
+                {"residual", e.cap - e.flow}
+            };
+            emit_json_update(edge_examine);
+
+            int curr_flow = std::min(flow, e.cap - e.flow);
+            int temp_flow = dfs_with_viz(e.v, t, curr_flow, current_path);
+
+            if (temp_flow > 0) {
+                e.flow += temp_flow;
+                adj_list[e.v][e.rev].flow -= temp_flow;
+                path_found = true;
+
+                // Emit edge update
+                json edge_update = {
+                    {"type", "edge_updated"},
                     {"source", u},
                     {"target", e.v},
                     {"capacity", e.cap},
                     {"flow", e.flow},
                     {"residual", e.cap - e.flow}
                 };
-                emit_json_update(edge_examine);
+                emit_json_update(edge_update);
 
-                int curr_flow = std::min(flow, e.cap - e.flow);
-                int temp_flow = dfs_with_viz(e.v, t, curr_flow, current_path);
-
-                if (temp_flow > 0) {
-                    e.flow += temp_flow;
-                    adj_list[e.v][e.rev].flow -= temp_flow;
-
-                    // Emit edge update
-                    json edge_update = {
-                        {"type", "edge_updated"},
-                        {"source", u},
-                        {"target", e.v},
-                        {"capacity", e.cap},
-                        {"flow", e.flow},
-                        {"residual", e.cap - e.flow}
-                    };
-                    emit_json_update(edge_update);
-
-                    return temp_flow;
-                }
+                return temp_flow;
+            } else {
+                // Add this: Emit path rejection event when a path doesn't work
+                json path_rejected = {
+                    {"type", "path_rejected"},
+                    {"rejected_path", current_path},
+                    {"last_node", e.v}
+                };
+                emit_json_update(path_rejected);
             }
         }
-
-        return 0;
     }
+
+    if (!path_found) {
+        // No valid path found from this node
+        json backtrack = {
+            {"type", "backtrack"},
+            {"node_id", u},
+            {"dead_end_path", current_path}
+        };
+        emit_json_update(backtrack);
+    }
+
+    return 0;
+}
 
     // Store path information for visualization
     void reconstruct_path(int s, int t, std::vector<int>& path) {
