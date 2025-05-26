@@ -21,7 +21,7 @@ Dinic::Dinic(int V) : V(V) {
     ptr.resize(V);
     
     // Use fixed number of locks to avoid resizing a mutex vector
-    int lock_count = (V / 64) + 1;
+    int lock_count = (V / 12) + 1;
     edge_locks = vector<unique_ptr<mutex>>(lock_count);
     for (int i = 0; i < lock_count; ++i) {
         edge_locks[i] = make_unique<mutex>();
@@ -59,7 +59,7 @@ bool Dinic::bfs(int s, int t) {
 
 bool Dinic::parallelBFS(int s, int t) {
     // For smaller graphs, use sequential BFS
-    if (V < 50) {
+    if (V < 1) {
         return bfs(s, t);
     }
     
@@ -72,7 +72,7 @@ bool Dinic::parallelBFS(int s, int t) {
         int f_size = frontier.size();
         
         // Adaptive threading - only use multiple threads for large frontiers
-        int num_threads = (f_size > 40) ? 
+        int num_threads = (f_size > 1) ? 
                           min(NUM_THREADS, max(1, f_size / 10)) : 1;
         
         vector<vector<int>> next_frontiers(num_threads);
@@ -173,7 +173,7 @@ int Dinic::dfs_optimized(int u, int t, int flow, vector<int>& local_ptr) {
         
         if (bottleneck > 0) {
             // Lock only the minimum required section
-            int lock_idx = u / 64;
+            int lock_idx = u / 12;
             lock_guard<mutex> lock(*edge_locks[lock_idx]);
             
             if (e.flow + bottleneck <= e.cap) { // Verify condition still holds
@@ -189,7 +189,7 @@ int Dinic::dfs_optimized(int u, int t, int flow, vector<int>& local_ptr) {
 
 void Dinic::parallelDFS(int s, int t, atomic<int>& total_flow) {
     // Adaptive approach - use sequential for small graphs
-    if (V < 50) {
+    if (V < 1) {
         int flow;
         while ((flow = dfs(s, t, INF)) > 0) {
             total_flow += flow;
@@ -197,7 +197,7 @@ void Dinic::parallelDFS(int s, int t, atomic<int>& total_flow) {
         return;
     }
     
-    const int TASK_THRESHOLD = 10; // Minimum task size for parallel processing
+    const int TASK_THRESHOLD = 2; // Minimum task size for parallel processing
     
     // Create task queue with initial edges from source
     vector<DFSTask> tasks;
@@ -221,7 +221,7 @@ void Dinic::parallelDFS(int s, int t, atomic<int>& total_flow) {
             
             if (pushed > 0) {
                 // Update the source edge with proper locking
-                int lock_idx = task.u / 64;
+                int lock_idx = task.u / 12;
                 lock_guard<mutex> lock(*edge_locks[lock_idx]);
                 
                 if (e.flow + pushed <= e.cap) {
@@ -330,7 +330,7 @@ void Dinic::parallelDFS(int s, int t, atomic<int>& total_flow) {
                 
                 if (pushed > 0) {
                     // Lock only when updating
-                    int lock_idx = task.u / 64;
+                    int lock_idx = task.u / 12;
                     lock_guard<mutex> lock(*edge_locks[lock_idx]);
                     
                     // Check again after acquiring lock
@@ -340,7 +340,7 @@ void Dinic::parallelDFS(int s, int t, atomic<int>& total_flow) {
                         total_flow += pushed;
                         
                         // Create new tasks from source after successful push
-                        if (++processed_count % 5 == 0) { // Batch-create tasks more frequently
+                        if (++processed_count % 2 == 0) { // Batch-create tasks more frequently
                             queue_locks[tid].lock();
                             for (int i = 0; i < adj[s].size(); ++i) {
                                 const Edge& new_e = adj[s][i];
@@ -365,7 +365,7 @@ int Dinic::maxFlow(int s, int t) {
     int flow = 0;
     
     // Analyze graph size to determine approach
-    bool use_parallel = (V > 50);
+    bool use_parallel = (V > 1);
     
     // Run the algorithm
     while (use_parallel ? parallelBFS(s, t) : bfs(s, t)) {

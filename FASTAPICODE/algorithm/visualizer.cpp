@@ -177,40 +177,83 @@ protected:
         };
         emit_json_update(bfs_start);
 
+        // Keep track of the current frontier for visualization
+        std::vector<int> current_frontier = {s};
+        
+        // Emit initial frontier
+        json frontier_update = {
+            {"type", "bfs_frontier"},
+            {"frontier", current_frontier}
+        };
+        emit_json_update(frontier_update);
+
         while (!q.empty()) {
-            int u = q.front();
-            q.pop();
+            // Process the current level as a frontier
+            int frontier_size = q.size();
+            current_frontier.clear();
+            
+            // Process all nodes at the current level
+            for (int i = 0; i < frontier_size; i++) {
+                int u = q.front();
+                q.pop();
+                
+                // Add to current frontier
+                current_frontier.push_back(u);
 
-            // Emit node visit event
-            json node_visit = {
-                {"type", "node_visited"},
-                {"node_id", u}
-            };
-            emit_json_update(node_visit);
+                // Emit node visit event
+                json node_visit = {
+                    {"type", "node_visited"},
+                    {"node_id", u}
+                };
+                emit_json_update(node_visit);
+            }
+            
+            // Emit the current frontier
+            if (!current_frontier.empty()) {
+                json frontier_update = {
+                    {"type", "bfs_frontier"},
+                    {"frontier", current_frontier}
+                };
+                emit_json_update(frontier_update);
+                
+                // Slow down for visualization purposes
+                std::this_thread::sleep_for(std::chrono::milliseconds(g_delay_factor));
+            }
+            
+            // Process each node in the current frontier
+            std::vector<int> next_frontier;
+            for (int u : current_frontier) {
+                const auto& adj_list = Dinic::getAdj();
+                for (const Edge& e : adj_list[u]) {
+                    if (level_ref[e.v] == -1 && e.flow < e.cap) {
+                        level_ref[e.v] = level_ref[u] + 1;
+                        q.push(e.v);
+                        next_frontier.push_back(e.v);
 
-            // Slow down for visualization purposes
-            std::this_thread::sleep_for(std::chrono::milliseconds(g_delay_factor));
-
-            const auto& adj_list = Dinic::getAdj();
-            for (const Edge& e : adj_list[u]) {
-                if (level_ref[e.v] == -1 && e.flow < e.cap) {
-                    level_ref[e.v] = level_ref[u] + 1;
-                    q.push(e.v);
-
-                    // Emit edge exploration event
-                    json edge_explore = {
-                        {"type", "edge_explored"},
-                        {"source", u},
-                        {"target", e.v},
-                        {"capacity", e.cap},
-                        {"flow", e.flow},
-                        {"residual", e.cap - e.flow}
-                    };
-                    emit_json_update(edge_explore);
-
-                    // Slow down slightly for edge exploration
-                    std::this_thread::sleep_for(std::chrono::milliseconds(g_delay_factor / 2));
+                        // Emit edge exploration event
+                        json edge_explore = {
+                            {"type", "edge_explored"},
+                            {"source", u},
+                            {"target", e.v},
+                            {"capacity", e.cap},
+                            {"flow", e.flow},
+                            {"residual", e.cap - e.flow}
+                        };
+                        emit_json_update(edge_explore);
+                    }
                 }
+            }
+            
+            // Emit the next frontier if not empty
+            if (!next_frontier.empty()) {
+                json next_frontier_update = {
+                    {"type", "bfs_frontier"},
+                    {"frontier", next_frontier}
+                };
+                emit_json_update(next_frontier_update);
+                
+                // Slow down slightly for edge exploration
+                std::this_thread::sleep_for(std::chrono::milliseconds(g_delay_factor / 2));
             }
         }
 
